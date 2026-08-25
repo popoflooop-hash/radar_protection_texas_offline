@@ -46,6 +46,7 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
   void initState() {
     super.initState();
     WakelockPlus.enable();
+    _flutterTts.setLanguage("en-US"); // إضافة ضبط اللغة للتنبيه الصوتي
     _initLocationTracking();
   }
 
