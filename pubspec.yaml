@@ -12,6 +12,8 @@ dependencies:
   geolocator: ^11.0.0
   wakelock_plus: ^1.1.4
   flutter_tts: ^3.8.5
+  shared_preferences: ^2.3.3
+  share_plus: ^10.1.2
 
 dev_dependencies:
   flutter_test:
