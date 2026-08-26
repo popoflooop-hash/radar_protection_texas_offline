@@ -4,6 +4,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'dart:math';
+import 'road_data.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -40,17 +41,39 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
   final FlutterTts _flutterTts = FlutterTts();
   StreamSubscription<Position>? _positionSubscription;
   double _currentSpeedMph = 0.0;
-  int _estimatedSpeedLimit = 45;
+
+  int? _estimatedSpeedLimit;
+  bool _speedLimitConfirmed = false;
+
   SpeedometerStyle _currentStyle = SpeedometerStyle.digital;
   bool _isMuted = false;
   bool _hasWarnedForCurrentLimit = false;
+
+  RoadNetwork? _roadNetwork;
+  bool _roadDataFailed = false;
 
   @override
   void initState() {
     super.initState();
     WakelockPlus.enable();
-    _flutterTts.setLanguage("en-US"); // إضافة ضبط اللغة للتنبيه الصوتي
+    _flutterTts.setLanguage("en-US");
+    _loadRoadData();
     _initLocationTracking();
+  }
+
+  Future<void> _loadRoadData() async {
+    try {
+      final network = await loadRoadNetwork();
+      if (!mounted) return;
+      setState(() {
+        _roadNetwork = network;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _roadDataFailed = true;
+      });
+    }
   }
 
   @override
@@ -78,36 +101,48 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
       ),
     ).listen((Position position) {
       if (!mounted) return;
-      double speedMph = (position.speed * 2.23694); // M/S to MPH
+      double speedMph = (position.speed * 2.23694);
       setState(() {
         _currentSpeedMph = speedMph < 0 ? 0 : speedMph;
-        _analyzeSpeedLimit(_currentSpeedMph);
+        _updateSpeedLimitFromRoad(position.latitude, position.longitude);
+        _checkOverspeedWarning(_currentSpeedMph);
       });
     });
   }
 
-  void _analyzeSpeedLimit(double speed) {
-    int newLimit = 45;
-    if (speed > 60) {
-      newLimit = 70;
-    } else if (speed > 35) {
-      newLimit = 45;
-    } else {
-      newLimit = 30;
+  void _updateSpeedLimitFromRoad(double lat, double lng) {
+    final network = _roadNetwork;
+    if (network == null) return;
+
+    final match = network.findNearest(lat, lng, maxDistanceMeters: 150);
+
+    if (match == null) {
+      if (_estimatedSpeedLimit != null) {
+        _estimatedSpeedLimit = null;
+        _speedLimitConfirmed = false;
+        _hasWarnedForCurrentLimit = false;
+      }
+      return;
     }
 
-    if (newLimit != _estimatedSpeedLimit) {
-      _estimatedSpeedLimit = newLimit;
-      _hasWarnedForCurrentLimit = false; // إعادة ضبط التنبيه عند تغيّر الحد
+    if (_estimatedSpeedLimit != match.speedLimit) {
+      _estimatedSpeedLimit = match.speedLimit;
+      _hasWarnedForCurrentLimit = false;
     }
+    _speedLimitConfirmed = true;
+  }
 
-    bool isOverLimit = speed > _estimatedSpeedLimit + 3;
+  void _checkOverspeedWarning(double speed) {
+    final limit = _estimatedSpeedLimit;
+    if (limit == null) return;
+
+    bool isOverLimit = speed > limit + 3;
 
     if (isOverLimit && !_isMuted && !_hasWarnedForCurrentLimit) {
       _hasWarnedForCurrentLimit = true;
-      _flutterTts.speak("Speed limit exceeded. Limit is $_estimatedSpeedLimit");
+      _flutterTts.speak("Speed limit exceeded. Limit is $limit");
     } else if (!isOverLimit) {
-      _hasWarnedForCurrentLimit = false; // السماح بتنبيه جديد عند تجاوز الحد مجدداً
+      _hasWarnedForCurrentLimit = false;
     }
   }
 
@@ -125,13 +160,16 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    bool isSpeeding = _currentSpeedMph > _estimatedSpeedLimit;
-    Color alertColor = isSpeeding ? Colors.redAccent : Colors.greenAccent;
+    final limit = _estimatedSpeedLimit;
+    bool isSpeeding = limit != null && _currentSpeedMph > limit;
+    Color alertColor = limit == null
+        ? Colors.grey
+        : (isSpeeding ? Colors.redAccent : Colors.greenAccent);
 
     return Transform(
       alignment: Alignment.center,
       transform: _currentStyle == SpeedometerStyle.hud
-          ? (Matrix4.identity()..scale(1.0, -1.0)) // Reflect for HUD
+          ? (Matrix4.identity()..scale(1.0, -1.0))
           : Matrix4.identity(),
       child: Scaffold(
         appBar: AppBar(
@@ -148,6 +186,22 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
         body: Column(
           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
           children: [
+            if (_roadNetwork == null && !_roadDataFailed)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: Text(
+                  'جاري تحميل بيانات الطرق...',
+                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+              ),
+            if (_roadDataFailed)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: Text(
+                  'تعذّر تحميل بيانات حدود السرعة',
+                  style: TextStyle(color: Colors.orangeAccent, fontSize: 12),
+                ),
+              ),
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -178,11 +232,22 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
                 children: [
                   const Text('SPEED\nLIMIT',
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 14)),
+                      style: TextStyle(
+                          color: Colors.black,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14)),
                   Text(
-                    '$_estimatedSpeedLimit',
-                    style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 36),
+                    limit?.toString() ?? '--',
+                    style: const TextStyle(
+                        color: Colors.black,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 36),
                   ),
+                  if (limit != null)
+                    Text(
+                      _speedLimitConfirmed ? '(من بيانات TxDOT الرسمية)' : '',
+                      style: const TextStyle(color: Colors.black54, fontSize: 10),
+                    ),
                 ],
               ),
             ),
@@ -227,7 +292,8 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
             children: [
               Text(
                 _currentSpeedMph.toStringAsFixed(0),
-                style: TextStyle(fontSize: 80, fontWeight: FontWeight.bold, color: alertColor),
+                style: TextStyle(
+                    fontSize: 80, fontWeight: FontWeight.bold, color: alertColor),
               ),
               const Text('MPH', style: TextStyle(fontSize: 20, color: Colors.grey)),
             ],
