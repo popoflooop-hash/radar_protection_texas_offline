@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_tts/flutter_tts.dart';
@@ -37,10 +38,12 @@ class SpeedometerScreen extends StatefulWidget {
 
 class _SpeedometerScreenState extends State<SpeedometerScreen> {
   final FlutterTts _flutterTts = FlutterTts();
+  StreamSubscription<Position>? _positionSubscription;
   double _currentSpeedMph = 0.0;
   int _estimatedSpeedLimit = 45;
   SpeedometerStyle _currentStyle = SpeedometerStyle.digital;
   bool _isMuted = false;
+  bool _hasWarnedForCurrentLimit = false;
 
   @override
   void initState() {
@@ -48,6 +51,14 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
     WakelockPlus.enable();
     _flutterTts.setLanguage("en-US"); // إضافة ضبط اللغة للتنبيه الصوتي
     _initLocationTracking();
+  }
+
+  @override
+  void dispose() {
+    _positionSubscription?.cancel();
+    _flutterTts.stop();
+    WakelockPlus.disable();
+    super.dispose();
   }
 
   void _initLocationTracking() async {
@@ -60,12 +71,13 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
       if (permission == LocationPermission.denied) return;
     }
 
-    Geolocator.getPositionStream(
+    _positionSubscription = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
         distanceFilter: 2,
       ),
     ).listen((Position position) {
+      if (!mounted) return;
       double speedMph = (position.speed * 2.23694); // M/S to MPH
       setState(() {
         _currentSpeedMph = speedMph < 0 ? 0 : speedMph;
@@ -86,10 +98,16 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
 
     if (newLimit != _estimatedSpeedLimit) {
       _estimatedSpeedLimit = newLimit;
+      _hasWarnedForCurrentLimit = false; // إعادة ضبط التنبيه عند تغيّر الحد
     }
 
-    if (speed > _estimatedSpeedLimit + 3 && !_isMuted) {
+    bool isOverLimit = speed > _estimatedSpeedLimit + 3;
+
+    if (isOverLimit && !_isMuted && !_hasWarnedForCurrentLimit) {
+      _hasWarnedForCurrentLimit = true;
       _flutterTts.speak("Speed limit exceeded. Limit is $_estimatedSpeedLimit");
+    } else if (!isOverLimit) {
+      _hasWarnedForCurrentLimit = false; // السماح بتنبيه جديد عند تجاوز الحد مجدداً
     }
   }
 
