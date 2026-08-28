@@ -108,7 +108,8 @@ class _TexasSpeedGuardAppState extends State<TexasSpeedGuardApp> {
   }
 }
 
-enum SpeedometerStyle { digital, analogGauge, hud, tilted }
+enum ViewMode { normal, hudMirror }
+enum GaugeStyle { digital, analog }
 
 class SpeedometerScreen extends StatefulWidget {
   const SpeedometerScreen({super.key});
@@ -122,14 +123,17 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
   StreamSubscription<Position>? _positionSubscription;
   double _currentSpeedMph = 0.0;
 
-  int? _estimatedSpeedLimit;
+  int? _estimatedSpeedLimitMph;
   bool _speedLimitConfirmed = false;
 
-  SpeedometerStyle _currentStyle = SpeedometerStyle.digital;
+  ViewMode _viewMode = ViewMode.normal;
+  GaugeStyle _gaugeStyle = GaugeStyle.digital;
+
   bool _isMuted = false;
   bool _isTracking = false;
+  bool _useKmh = false;
 
-  double _tiltAngleDegrees = 0.0;
+  double _hudScale = 1.4; // تكبير العداد بوضع المرآة (الزجاج)
   int _maxAlertsPerMinute = 4;
   final List<DateTime> _alertTimestamps = [];
 
@@ -150,11 +154,14 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
     if (!mounted) return;
     setState(() {
       _isMuted = prefs.getBool('isMuted') ?? false;
-      _tiltAngleDegrees = prefs.getDouble('tiltAngle') ?? 0.0;
+      _useKmh = prefs.getBool('useKmh') ?? false;
+      _hudScale = prefs.getDouble('hudScale') ?? 1.4;
       _maxAlertsPerMinute = prefs.getInt('maxAlertsPerMinute') ?? 4;
-      final styleIndex = prefs.getInt('styleIndex') ?? 0;
-      _currentStyle = SpeedometerStyle.values[
-          styleIndex.clamp(0, SpeedometerStyle.values.length - 1)];
+      final viewIndex = prefs.getInt('viewModeIndex') ?? 0;
+      _viewMode = ViewMode.values[viewIndex.clamp(0, ViewMode.values.length - 1)];
+      final gaugeIndex = prefs.getInt('gaugeStyleIndex') ?? 0;
+      _gaugeStyle =
+          GaugeStyle.values[gaugeIndex.clamp(0, GaugeStyle.values.length - 1)];
     });
   }
 
@@ -194,11 +201,12 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text(
-                'Please turn on Location (GPS) in your phone settings.'),
+            content: Text('Location (GPS) is off. Opening settings...'),
           ),
         );
       }
+      // يفتح شاشة إعدادات الموقع بالنظام مباشرة (أقرب بديل ممكن لنافذة النظام السريعة)
+      await Geolocator.openLocationSettings();
       return;
     }
 
@@ -253,7 +261,7 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
     setState(() {
       _isTracking = false;
       _currentSpeedMph = 0;
-      _estimatedSpeedLimit = null;
+      _estimatedSpeedLimitMph = null;
       _speedLimitConfirmed = false;
       _alertTimestamps.clear();
     });
@@ -266,20 +274,20 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
     final match = network.findNearest(lat, lng, maxDistanceMeters: 150);
 
     if (match == null) {
-      _estimatedSpeedLimit = null;
+      _estimatedSpeedLimitMph = null;
       _speedLimitConfirmed = false;
       return;
     }
 
-    _estimatedSpeedLimit = match.speedLimit;
+    _estimatedSpeedLimitMph = match.speedLimit;
     _speedLimitConfirmed = true;
   }
 
-  void _checkOverspeedWarning(double speed) {
-    final limit = _estimatedSpeedLimit;
+  void _checkOverspeedWarning(double speedMph) {
+    final limit = _estimatedSpeedLimitMph;
     if (limit == null || _isMuted) return;
 
-    bool isOverLimit = speed > limit + 3;
+    bool isOverLimit = speedMph > limit + 3;
     if (!isOverLimit) return;
 
     final now = DateTime.now();
@@ -288,17 +296,29 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
 
     if (_alertTimestamps.length < _maxAlertsPerMinute) {
       _alertTimestamps.add(now);
-      _flutterTts.speak("Speed limit exceeded. Limit is $limit");
+      final displayLimit = _useKmh ? _mphToKmh(limit) : limit;
+      final unit = _useKmh ? 'kilometers per hour' : 'miles per hour';
+      _flutterTts.speak("Speed limit exceeded. Limit is $displayLimit $unit");
     }
   }
 
-  void _toggleStyle() {
+  int _mphToKmh(int mph) => (mph * 1.60934).round();
+
+  void _toggleViewMode() {
     setState(() {
-      final values = SpeedometerStyle.values;
-      final nextIndex = (_currentStyle.index + 1) % values.length;
-      _currentStyle = values[nextIndex];
+      _viewMode =
+          _viewMode == ViewMode.normal ? ViewMode.hudMirror : ViewMode.normal;
     });
-    _saveSetting('styleIndex', _currentStyle.index);
+    _saveSetting('viewModeIndex', _viewMode.index);
+  }
+
+  void _toggleGaugeStyle() {
+    setState(() {
+      _gaugeStyle = _gaugeStyle == GaugeStyle.digital
+          ? GaugeStyle.analog
+          : GaugeStyle.digital;
+    });
+    _saveSetting('gaugeStyleIndex', _gaugeStyle.index);
   }
 
   void _shareApp() {
@@ -312,20 +332,23 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
     final result = await Navigator.of(context).push<Map<String, dynamic>>(
       MaterialPageRoute(
         builder: (_) => SettingsScreen(
-          initialTiltAngle: _tiltAngleDegrees,
+          initialHudScale: _hudScale,
           initialMaxAlerts: _maxAlertsPerMinute,
           initialThemeMode: themeController.value,
+          initialUseKmh: _useKmh,
         ),
       ),
     );
 
     if (result != null) {
       setState(() {
-        _tiltAngleDegrees = result['tiltAngle'] as double;
+        _hudScale = result['hudScale'] as double;
         _maxAlertsPerMinute = result['maxAlertsPerMinute'] as int;
+        _useKmh = result['useKmh'] as bool;
       });
-      _saveSetting('tiltAngle', _tiltAngleDegrees);
+      _saveSetting('hudScale', _hudScale);
       _saveSetting('maxAlertsPerMinute', _maxAlertsPerMinute);
+      _saveSetting('useKmh', _useKmh);
 
       final newThemeMode = result['themeMode'] as String;
       themeController.value = newThemeMode;
@@ -347,11 +370,59 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
     return ValueListenableBuilder<Color>(
       valueListenable: accentColorController,
       builder: (context, accent, _) {
-        final limit = _estimatedSpeedLimit;
-        bool isSpeeding = limit != null && _currentSpeedMph > limit;
-        Color statusColor = limit == null
-            ? Colors.grey
-            : (isSpeeding ? Colors.redAccent : Colors.greenAccent);
+        final limitMph = _estimatedSpeedLimitMph;
+        bool isSpeeding = limitMph != null && _currentSpeedMph > limitMph;
+        // اللون العام دايماً هو لونك المختار، إلا وقت تجاوز السرعة = أحمر ثابت (سلامة)
+        Color statusColor = isSpeeding ? Colors.redAccent : accent;
+
+        final displaySpeed =
+            _useKmh ? _currentSpeedMph * 1.60934 : _currentSpeedMph;
+        final displayLimit = limitMph == null
+            ? null
+            : (_useKmh ? _mphToKmh(limitMph) : limitMph);
+        final unitLabel = _useKmh ? 'KM/H' : 'MPH';
+
+        Widget gauge = _gaugeStyle == GaugeStyle.analog
+            ? CustomPaint(
+                size: const Size(240, 240),
+                painter: RealGaugePainter(
+                  speed: displaySpeed,
+                  maxSpeed: _useKmh ? 220 : 140,
+                  tickStep: _useKmh ? 20 : 10,
+                  majorEvery: _useKmh ? 40 : 20,
+                  unitLabel: unitLabel,
+                  accentColor: accent,
+                  needleColor: statusColor,
+                ),
+              )
+            : Container(
+                width: 220,
+                height: 220,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: statusColor, width: 8),
+                  color: const Color(0xFF0A0A0A),
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      displaySpeed.toStringAsFixed(0),
+                      style: TextStyle(
+                          fontSize: 78,
+                          fontWeight: FontWeight.w500,
+                          color: statusColor),
+                    ),
+                    Text(unitLabel,
+                        style:
+                            const TextStyle(fontSize: 18, color: Colors.grey)),
+                  ],
+                ),
+              );
+
+        if (_viewMode == ViewMode.hudMirror) {
+          gauge = Transform.scale(scale: _hudScale, child: gauge);
+        }
 
         Widget content = Scaffold(
           appBar: AppBar(
@@ -403,8 +474,10 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
                     style: TextStyle(color: Colors.orangeAccent, fontSize: 12),
                   ),
                 ),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 8,
+                runSpacing: 8,
                 children: [
                   OutlinedButton.icon(
                     onPressed: _isTracking ? _stopTracking : _startTracking,
@@ -420,11 +493,25 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
                       side: BorderSide(color: accent),
                     ),
                   ),
-                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    onPressed: _toggleViewMode,
+                    icon: Icon(Icons.flip, color: accent),
+                    label: Text(
+                      _viewMode == ViewMode.normal
+                          ? 'View: Normal'
+                          : 'View: Mirror (HUD)',
+                      style: TextStyle(color: accent),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      side: BorderSide(color: accent),
+                    ),
+                  ),
                   ElevatedButton.icon(
-                    onPressed: _toggleStyle,
+                    onPressed: _toggleGaugeStyle,
                     icon: const Icon(Icons.dashboard_customize),
-                    label: Text(_getStyleName(_currentStyle)),
+                    label: Text(_gaugeStyle == GaugeStyle.digital
+                        ? 'Gauge: Digital'
+                        : 'Gauge: Analog'),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: accent,
                       foregroundColor: Colors.black,
@@ -433,9 +520,7 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
                 ],
               ),
               Expanded(
-                child: Center(
-                  child: _buildSpeedometerWidget(accent, statusColor),
-                ),
+                child: Center(child: gauge),
               ),
               Container(
                 padding:
@@ -454,7 +539,7 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
                             letterSpacing: 1,
                             fontSize: 11)),
                     Text(
-                      limit?.toString() ?? '--',
+                      displayLimit?.toString() ?? '--',
                       style: const TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.w500,
@@ -472,14 +557,7 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
           ),
         );
 
-        if (_currentStyle == SpeedometerStyle.tilted) {
-          return Transform.rotate(
-            angle: -_tiltAngleDegrees * pi / 180,
-            child: content,
-          );
-        }
-
-        if (_currentStyle == SpeedometerStyle.hud) {
+        if (_viewMode == ViewMode.hudMirror) {
           return Transform(
             alignment: Alignment.center,
             transform: Matrix4.identity()..scale(1.0, -1.0),
@@ -491,65 +569,25 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
       },
     );
   }
-
-  String _getStyleName(SpeedometerStyle style) {
-    switch (style) {
-      case SpeedometerStyle.digital:
-        return 'Style: Digital';
-      case SpeedometerStyle.analogGauge:
-        return 'Style: Gauge';
-      case SpeedometerStyle.hud:
-        return 'Style: HUD Mirror';
-      case SpeedometerStyle.tilted:
-        return 'Style: Tilted';
-    }
-  }
-
-  Widget _buildSpeedometerWidget(Color accent, Color statusColor) {
-    if (_currentStyle == SpeedometerStyle.analogGauge) {
-      return CustomPaint(
-        size: const Size(240, 240),
-        painter: RealGaugePainter(
-          speed: _currentSpeedMph,
-          accentColor: accent,
-          needleColor: statusColor,
-        ),
-      );
-    }
-
-    return Container(
-      width: 220,
-      height: 220,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        border: Border.all(color: statusColor, width: 8),
-        color: const Color(0xFF0A0A0A),
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Text(
-            _currentSpeedMph.toStringAsFixed(0),
-            style: TextStyle(
-                fontSize: 78, fontWeight: FontWeight.w500, color: statusColor),
-          ),
-          const Text('MPH', style: TextStyle(fontSize: 18, color: Colors.grey)),
-        ],
-      ),
-    );
-  }
 }
 
 class RealGaugePainter extends CustomPainter {
   final double speed;
+  final double maxSpeed;
+  final double tickStep;
+  final double majorEvery;
+  final String unitLabel;
   final Color accentColor;
   final Color needleColor;
-  static const double maxSpeed = 140;
   static const double startAngle = 135 * pi / 180;
   static const double sweepTotal = 270 * pi / 180;
 
   RealGaugePainter({
     required this.speed,
+    required this.maxSpeed,
+    required this.tickStep,
+    required this.majorEvery,
+    required this.unitLabel,
     required this.accentColor,
     required this.needleColor,
   });
@@ -570,9 +608,9 @@ class RealGaugePainter extends CustomPainter {
       ..strokeWidth = 3;
     canvas.drawCircle(center, radius - 2, ringBorder);
 
-    for (double v = 0; v <= maxSpeed; v += 10) {
+    for (double v = 0; v <= maxSpeed; v += tickStep) {
       final angle = startAngle + (v / maxSpeed) * sweepTotal;
-      final isMajor = (v.toInt() % 20 == 0);
+      final isMajor = (v % majorEvery == 0);
       final outerR = radius - 8;
       final innerR = isMajor ? radius - 26 : radius - 20;
 
@@ -633,17 +671,17 @@ class RealGaugePainter extends CustomPainter {
       Offset(center.dx - speedText.width / 2, center.dy + 28),
     );
 
-    final mphText = TextPainter(
-      text: const TextSpan(
-        text: 'MPH',
-        style: TextStyle(color: Colors.grey, fontSize: 11),
+    final unitText = TextPainter(
+      text: TextSpan(
+        text: unitLabel,
+        style: const TextStyle(color: Colors.grey, fontSize: 11),
       ),
       textDirection: TextDirection.ltr,
     );
-    mphText.layout();
-    mphText.paint(
+    unitText.layout();
+    unitText.paint(
       canvas,
-      Offset(center.dx - mphText.width / 2, center.dy + 62),
+      Offset(center.dx - unitText.width / 2, center.dy + 62),
     );
   }
 
@@ -652,15 +690,17 @@ class RealGaugePainter extends CustomPainter {
 }
 
 class SettingsScreen extends StatefulWidget {
-  final double initialTiltAngle;
+  final double initialHudScale;
   final int initialMaxAlerts;
   final String initialThemeMode;
+  final bool initialUseKmh;
 
   const SettingsScreen({
     super.key,
-    required this.initialTiltAngle,
+    required this.initialHudScale,
     required this.initialMaxAlerts,
     required this.initialThemeMode,
+    required this.initialUseKmh,
   });
 
   @override
@@ -668,23 +708,26 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  late double _tiltAngle;
+  late double _hudScale;
   late int _maxAlerts;
   late String _themeMode;
+  late bool _useKmh;
 
   @override
   void initState() {
     super.initState();
-    _tiltAngle = widget.initialTiltAngle;
+    _hudScale = widget.initialHudScale;
     _maxAlerts = widget.initialMaxAlerts;
     _themeMode = widget.initialThemeMode;
+    _useKmh = widget.initialUseKmh;
   }
 
   void _returnResult() {
     Navigator.of(context).pop({
-      'tiltAngle': _tiltAngle,
+      'hudScale': _hudScale,
       'maxAlertsPerMinute': _maxAlerts,
       'themeMode': _themeMode,
+      'useKmh': _useKmh,
     });
   }
 
@@ -726,20 +769,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
               style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
             const Divider(height: 32),
-            const Text('Mount Tilt Angle',
+            const Text('Speed Unit',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             const SizedBox(height: 8),
-            Text('${_tiltAngle.round()}°'),
+            SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(value: false, label: Text('MPH')),
+                ButtonSegment(value: true, label: Text('KM/H')),
+              ],
+              selected: {_useKmh},
+              onSelectionChanged: (s) {
+                setState(() => _useKmh = s.first);
+              },
+            ),
+            const Divider(height: 32),
+            const Text('HUD / Mirror Gauge Size',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const SizedBox(height: 8),
+            Text('${_hudScale.toStringAsFixed(1)}x'),
             Slider(
-              value: _tiltAngle,
-              min: -60,
-              max: 60,
-              divisions: 120,
-              label: '${_tiltAngle.round()}°',
-              onChanged: (v) => setState(() => _tiltAngle = v),
+              value: _hudScale,
+              min: 1.0,
+              max: 2.5,
+              divisions: 15,
+              label: '${_hudScale.toStringAsFixed(1)}x',
+              onChanged: (v) => setState(() => _hudScale = v),
             ),
             const Text(
-              'Used only in "Tilted" display style, to correct for how your phone mount is angled.',
+              'Makes the gauge bigger only in "Mirror (HUD)" view, so it\'s easier to read reflected on your windshield.',
               style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
             const Divider(height: 32),
