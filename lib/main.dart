@@ -10,12 +10,10 @@ import 'road_data.dart';
 
 const Color kGold = Color(0xFFD4AF37);
 
-/// يتحكم بوضع الثيم (تلقائي / داكن / فاتح) على مستوى التطبيق كامل
 class ThemeController extends ValueNotifier<String> {
   ThemeController() : super('auto'); // auto | dark | light
 }
 
-/// يتحكم باللون العام (الافتراضي ذهبي)، قابل للتخصيص من زر القلم
 class AccentColorController extends ValueNotifier<Color> {
   AccentColorController() : super(kGold);
 }
@@ -192,14 +190,44 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
 
   Future<void> _startTracking() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) return;
+    if (!serviceEnabled) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'Please turn on Location (GPS) in your phone settings.'),
+          ),
+        );
+      }
+      return;
+    }
 
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) return;
+      if (permission == LocationPermission.denied) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                  'Location permission denied. Please allow it to use tracking.'),
+            ),
+          );
+        }
+        return;
+      }
     }
-    if (permission == LocationPermission.deniedForever) return;
+    if (permission == LocationPermission.deniedForever) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'Location permission is permanently denied. Enable it manually from your phone Settings > Apps > Texas Speed Guard > Permissions.'),
+          ),
+        );
+      }
+      return;
+    }
 
     setState(() => _isTracking = true);
 
@@ -512,7 +540,6 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
   }
 }
 
-/// عداد سرعة حقيقي: خط تدريج، أرقام 0-140، ومؤشر
 class RealGaugePainter extends CustomPainter {
   final double speed;
   final Color accentColor;
@@ -624,7 +651,6 @@ class RealGaugePainter extends CustomPainter {
   bool shouldRepaint(covariant RealGaugePainter oldDelegate) => true;
 }
 
-/// شاشة الإعدادات
 class SettingsScreen extends StatefulWidget {
   final double initialTiltAngle;
   final int initialMaxAlerts;
@@ -736,7 +762,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 }
 
-/// شاشة اختيار اللون: شريط تدرّج تسحب عليه نقطة، والتطبيق كامل يتلون فوراً
 class ColorPickerScreen extends StatefulWidget {
   const ColorPickerScreen({super.key});
 
