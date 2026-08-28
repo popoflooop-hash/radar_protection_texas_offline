@@ -8,12 +8,20 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:share_plus/share_plus.dart';
 import 'road_data.dart';
 
+const Color kGold = Color(0xFFD4AF37);
+
 /// يتحكم بوضع الثيم (تلقائي / داكن / فاتح) على مستوى التطبيق كامل
 class ThemeController extends ValueNotifier<String> {
   ThemeController() : super('auto'); // auto | dark | light
 }
 
+/// يتحكم باللون العام (الافتراضي ذهبي)، قابل للتخصيص من زر القلم
+class AccentColorController extends ValueNotifier<Color> {
+  AccentColorController() : super(kGold);
+}
+
 final themeController = ThemeController();
+final accentColorController = AccentColorController();
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -33,30 +41,38 @@ class _TexasSpeedGuardAppState extends State<TexasSpeedGuardApp> {
   @override
   void initState() {
     super.initState();
-    _loadThemePref();
-    // يعيد فحص الوقت كل دقيقة عشان يبدّل الثيم تلقائياً لو الوضع "auto"
+    _loadPrefs();
     _clockTimer = Timer.periodic(const Duration(minutes: 1), (_) {
       if (mounted) setState(() {});
     });
-    themeController.addListener(() {
-      if (mounted) setState(() {});
-    });
+    themeController.addListener(_onChange);
+    accentColorController.addListener(_onChange);
   }
 
-  Future<void> _loadThemePref() async {
+  void _onChange() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _loadPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     themeController.value = prefs.getString('themeMode') ?? 'auto';
+    final savedColor = prefs.getInt('accentColor');
+    if (savedColor != null) {
+      accentColorController.value = Color(savedColor);
+    }
   }
 
   @override
   void dispose() {
     _clockTimer?.cancel();
+    themeController.removeListener(_onChange);
+    accentColorController.removeListener(_onChange);
     super.dispose();
   }
 
   bool _isNightTimeNow() {
     final hour = DateTime.now().hour;
-    return hour >= 19 || hour < 6; // 7 مساءً - 6 صباحاً = ليلي
+    return hour >= 19 || hour < 6;
   }
 
   @override
@@ -69,18 +85,20 @@ class _TexasSpeedGuardAppState extends State<TexasSpeedGuardApp> {
       case 'light':
         useDark = false;
         break;
-      default: // auto
+      default:
         useDark = _isNightTimeNow();
     }
 
     final darkTheme = ThemeData.dark().copyWith(
-      scaffoldBackgroundColor: const Color(0xFF0A0E21),
-      primaryColor: const Color(0xFF1D1E33),
+      scaffoldBackgroundColor: Colors.black,
+      primaryColor: Colors.black,
+      appBarTheme: const AppBarTheme(backgroundColor: Colors.black),
     );
 
     final lightTheme = ThemeData.light().copyWith(
-      scaffoldBackgroundColor: const Color(0xFFF2F2F2),
-      primaryColor: const Color(0xFFEDEDED),
+      scaffoldBackgroundColor: const Color(0xFFF4F1E8),
+      primaryColor: const Color(0xFFF4F1E8),
+      appBarTheme: const AppBarTheme(backgroundColor: Color(0xFFF4F1E8)),
     );
 
     return MaterialApp(
@@ -111,8 +129,9 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
 
   SpeedometerStyle _currentStyle = SpeedometerStyle.digital;
   bool _isMuted = false;
+  bool _isTracking = false;
 
-  double _tiltAngleDegrees = 0.0; // زاوية تصحيح الميلان (وضع Tilted)
+  double _tiltAngleDegrees = 0.0;
   int _maxAlertsPerMinute = 4;
   final List<DateTime> _alertTimestamps = [];
 
@@ -126,7 +145,6 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
     _flutterTts.setLanguage("en-US");
     _loadSettings();
     _loadRoadData();
-    _initLocationTracking();
   }
 
   Future<void> _loadSettings() async {
@@ -172,7 +190,7 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
     super.dispose();
   }
 
-  void _initLocationTracking() async {
+  Future<void> _startTracking() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) return;
 
@@ -181,6 +199,9 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
       permission = await Geolocator.requestPermission();
       if (permission == LocationPermission.denied) return;
     }
+    if (permission == LocationPermission.deniedForever) return;
+
+    setState(() => _isTracking = true);
 
     _positionSubscription = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
@@ -195,6 +216,18 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
         _updateSpeedLimitFromRoad(position.latitude, position.longitude);
         _checkOverspeedWarning(_currentSpeedMph);
       });
+    });
+  }
+
+  void _stopTracking() {
+    _positionSubscription?.cancel();
+    _positionSubscription = null;
+    setState(() {
+      _isTracking = false;
+      _currentSpeedMph = 0;
+      _estimatedSpeedLimit = null;
+      _speedLimitConfirmed = false;
+      _alertTimestamps.clear();
     });
   }
 
@@ -214,7 +247,6 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
     _speedLimitConfirmed = true;
   }
 
-  /// ينطق تنبيه صوتي بحد أقصى "عدد مرات بالدقيقة" حسب إعدادات المستخدم
   void _checkOverspeedWarning(double speed) {
     final limit = _estimatedSpeedLimit;
     if (limit == null || _isMuted) return;
@@ -274,123 +306,162 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
     }
   }
 
+  void _openColorPicker() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const ColorPickerScreen(),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final limit = _estimatedSpeedLimit;
-    bool isSpeeding = limit != null && _currentSpeedMph > limit;
-    Color alertColor = limit == null
-        ? Colors.grey
-        : (isSpeeding ? Colors.redAccent : Colors.greenAccent);
+    return ValueListenableBuilder<Color>(
+      valueListenable: accentColorController,
+      builder: (context, accent, _) {
+        final limit = _estimatedSpeedLimit;
+        bool isSpeeding = limit != null && _currentSpeedMph > limit;
+        Color statusColor = limit == null
+            ? Colors.grey
+            : (isSpeeding ? Colors.redAccent : Colors.greenAccent);
 
-    Widget content = Scaffold(
-      appBar: AppBar(
-        title: const Text('Texas Speed Guard'),
-        centerTitle: true,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.share),
-            onPressed: _shareApp,
-          ),
-          IconButton(
-            icon: Icon(_isMuted ? Icons.volume_off : Icons.volume_up),
-            onPressed: () {
-              setState(() => _isMuted = !_isMuted);
-              _saveSetting('isMuted', _isMuted);
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: _openSettings,
-          ),
-        ],
-      ),
-      body: Column(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          if (_roadNetwork == null && !_roadDataFailed)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text(
-                'Loading road data...',
-                style: TextStyle(color: Colors.grey, fontSize: 12),
+        Widget content = Scaffold(
+          appBar: AppBar(
+            title: Text('Texas Speed Guard', style: TextStyle(color: accent)),
+            centerTitle: true,
+            iconTheme: IconThemeData(color: accent),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.share),
+                color: accent,
+                onPressed: _shareApp,
               ),
-            ),
-          if (_roadDataFailed)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text(
-                'Could not load speed limit data',
-                style: TextStyle(color: Colors.orangeAccent, fontSize: 12),
+              IconButton(
+                icon: Icon(_isMuted ? Icons.volume_off : Icons.volume_up),
+                color: accent,
+                onPressed: () {
+                  setState(() => _isMuted = !_isMuted);
+                  _saveSetting('isMuted', _isMuted);
+                },
               ),
-            ),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              ElevatedButton.icon(
-                onPressed: _toggleStyle,
-                icon: const Icon(Icons.dashboard_customize),
-                label: Text(_getStyleName(_currentStyle)),
+              IconButton(
+                icon: const Icon(Icons.edit),
+                color: accent,
+                onPressed: _openColorPicker,
+              ),
+              IconButton(
+                icon: const Icon(Icons.settings),
+                color: accent,
+                onPressed: _openSettings,
               ),
             ],
           ),
-          Expanded(
-            child: Center(
-              child: _buildSpeedometerWidget(alertColor),
-            ),
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.black, width: 4),
-            ),
-            child: Column(
-              children: [
-                const Text('SPEED\nLIMIT',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                        color: Colors.black,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14)),
-                Text(
-                  limit?.toString() ?? '--',
-                  style: const TextStyle(
-                      color: Colors.black,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 36),
-                ),
-                if (limit != null)
-                  Text(
-                    _speedLimitConfirmed ? '(TxDOT official data)' : '',
-                    style: const TextStyle(color: Colors.black54, fontSize: 10),
+          body: Column(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              if (_roadNetwork == null && !_roadDataFailed)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 6),
+                  child: Text(
+                    'Loading road data...',
+                    style: TextStyle(color: Colors.grey, fontSize: 12),
                   ),
-              ],
-            ),
+                ),
+              if (_roadDataFailed)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 6),
+                  child: Text(
+                    'Could not load speed limit data',
+                    style: TextStyle(color: Colors.orangeAccent, fontSize: 12),
+                  ),
+                ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: _isTracking ? _stopTracking : _startTracking,
+                    icon: Icon(
+                      _isTracking ? Icons.stop : Icons.play_arrow,
+                      color: accent,
+                    ),
+                    label: Text(
+                      _isTracking ? 'Stop tracking' : 'Start tracking',
+                      style: TextStyle(color: accent),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      side: BorderSide(color: accent),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton.icon(
+                    onPressed: _toggleStyle,
+                    icon: const Icon(Icons.dashboard_customize),
+                    label: Text(_getStyleName(_currentStyle)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: accent,
+                      foregroundColor: Colors.black,
+                    ),
+                  ),
+                ],
+              ),
+              Expanded(
+                child: Center(
+                  child: _buildSpeedometerWidget(accent, statusColor),
+                ),
+              ),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF111111),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: accent, width: 1.5),
+                ),
+                child: Column(
+                  children: [
+                    Text('SPEED LIMIT',
+                        style: TextStyle(
+                            color: accent,
+                            fontWeight: FontWeight.w500,
+                            letterSpacing: 1,
+                            fontSize: 11)),
+                    Text(
+                      limit?.toString() ?? '--',
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w500,
+                          fontSize: 30),
+                    ),
+                    Text(
+                      _speedLimitConfirmed ? 'TxDOT official data' : '',
+                      style: const TextStyle(color: Colors.grey, fontSize: 9),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
           ),
-          const SizedBox(height: 20),
-        ],
-      ),
+        );
+
+        if (_currentStyle == SpeedometerStyle.tilted) {
+          return Transform.rotate(
+            angle: -_tiltAngleDegrees * pi / 180,
+            child: content,
+          );
+        }
+
+        if (_currentStyle == SpeedometerStyle.hud) {
+          return Transform(
+            alignment: Alignment.center,
+            transform: Matrix4.identity()..scale(1.0, -1.0),
+            child: content,
+          );
+        }
+
+        return content;
+      },
     );
-
-    // وضع Tilted: يدوّر الشاشة بزاوية تصحيح حسب ميلان حامل الموبايل
-    if (_currentStyle == SpeedometerStyle.tilted) {
-      return Transform.rotate(
-        angle: -_tiltAngleDegrees * pi / 180,
-        child: content,
-      );
-    }
-
-    // وضع HUD: انعكاس أفقي لزجاج السيارة
-    if (_currentStyle == SpeedometerStyle.hud) {
-      return Transform(
-        alignment: Alignment.center,
-        transform: Matrix4.identity()..scale(1.0, -1.0),
-        child: content,
-      );
-    }
-
-    return content;
   }
 
   String _getStyleName(SpeedometerStyle style) {
@@ -398,7 +469,7 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
       case SpeedometerStyle.digital:
         return 'Style: Digital';
       case SpeedometerStyle.analogGauge:
-        return 'Style: Analog Gauge';
+        return 'Style: Gauge';
       case SpeedometerStyle.hud:
         return 'Style: HUD Mirror';
       case SpeedometerStyle.tilted:
@@ -406,83 +477,151 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
     }
   }
 
-  Widget _buildSpeedometerWidget(Color alertColor) {
-    switch (_currentStyle) {
-      case SpeedometerStyle.analogGauge:
-        return CustomPaint(
-          size: const Size(250, 250),
-          painter: GaugePainter(speed: _currentSpeedMph, alertColor: alertColor),
-        );
-      case SpeedometerStyle.hud:
-      case SpeedometerStyle.tilted:
-      case SpeedometerStyle.digital:
-      default:
-        return Container(
-          width: 220,
-          height: 220,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(color: alertColor, width: 8),
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                _currentSpeedMph.toStringAsFixed(0),
-                style: TextStyle(
-                    fontSize: 80, fontWeight: FontWeight.bold, color: alertColor),
-              ),
-              const Text('MPH', style: TextStyle(fontSize: 20, color: Colors.grey)),
-            ],
-          ),
-        );
+  Widget _buildSpeedometerWidget(Color accent, Color statusColor) {
+    if (_currentStyle == SpeedometerStyle.analogGauge) {
+      return CustomPaint(
+        size: const Size(240, 240),
+        painter: RealGaugePainter(
+          speed: _currentSpeedMph,
+          accentColor: accent,
+          needleColor: statusColor,
+        ),
+      );
     }
+
+    return Container(
+      width: 220,
+      height: 220,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: statusColor, width: 8),
+        color: const Color(0xFF0A0A0A),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(
+            _currentSpeedMph.toStringAsFixed(0),
+            style: TextStyle(
+                fontSize: 78, fontWeight: FontWeight.w500, color: statusColor),
+          ),
+          const Text('MPH', style: TextStyle(fontSize: 18, color: Colors.grey)),
+        ],
+      ),
+    );
   }
 }
 
-class GaugePainter extends CustomPainter {
+/// عداد سرعة حقيقي: خط تدريج، أرقام 0-140، ومؤشر
+class RealGaugePainter extends CustomPainter {
   final double speed;
-  final Color alertColor;
+  final Color accentColor;
+  final Color needleColor;
+  static const double maxSpeed = 140;
+  static const double startAngle = 135 * pi / 180;
+  static const double sweepTotal = 270 * pi / 180;
 
-  GaugePainter({required this.speed, required this.alertColor});
+  RealGaugePainter({
+    required this.speed,
+    required this.accentColor,
+    required this.needleColor,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
     final radius = size.width / 2;
 
-    final trackPaint = Paint()
-      ..color = Colors.grey.shade800
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 14;
+    final ringPaint = Paint()
+      ..color = const Color(0xFF0A0A0A)
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(center, radius, ringPaint);
 
-    final progressPaint = Paint()
-      ..color = alertColor
+    final ringBorder = Paint()
+      ..color = accentColor
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 14
+      ..strokeWidth = 3;
+    canvas.drawCircle(center, radius - 2, ringBorder);
+
+    for (double v = 0; v <= maxSpeed; v += 10) {
+      final angle = startAngle + (v / maxSpeed) * sweepTotal;
+      final isMajor = (v.toInt() % 20 == 0);
+      final outerR = radius - 8;
+      final innerR = isMajor ? radius - 26 : radius - 20;
+
+      final p1 = Offset(center.dx + outerR * cos(angle),
+          center.dy + outerR * sin(angle));
+      final p2 = Offset(center.dx + innerR * cos(angle),
+          center.dy + innerR * sin(angle));
+
+      final tickPaint = Paint()
+        ..color = accentColor
+        ..strokeWidth = isMajor ? 3 : 1.5;
+      canvas.drawLine(p1, p2, tickPaint);
+
+      if (isMajor) {
+        final numR = radius - 42;
+        final numPos = Offset(center.dx + numR * cos(angle),
+            center.dy + numR * sin(angle));
+        final textPainter = TextPainter(
+          text: TextSpan(
+            text: v.toInt().toString(),
+            style: const TextStyle(color: Colors.white, fontSize: 13),
+          ),
+          textDirection: TextDirection.ltr,
+        );
+        textPainter.layout();
+        textPainter.paint(
+          canvas,
+          Offset(numPos.dx - textPainter.width / 2,
+              numPos.dy - textPainter.height / 2),
+        );
+      }
+    }
+
+    final clampedSpeed = speed.clamp(0, maxSpeed);
+    final needleAngle = startAngle + (clampedSpeed / maxSpeed) * sweepTotal;
+    final needleEnd = Offset(
+      center.dx + (radius - 40) * cos(needleAngle),
+      center.dy + (radius - 40) * sin(needleAngle),
+    );
+    final needlePaint = Paint()
+      ..color = needleColor
+      ..strokeWidth = 4
       ..strokeCap = StrokeCap.round;
+    canvas.drawLine(center, needleEnd, needlePaint);
+    canvas.drawCircle(center, 7, Paint()..color = needleColor);
 
-    canvas.drawArc(
-      Rect.fromCircle(center: center, radius: radius - 10),
-      pi * 0.75,
-      pi * 1.5,
-      false,
-      trackPaint,
+    final speedText = TextPainter(
+      text: TextSpan(
+        text: speed.toStringAsFixed(0),
+        style: TextStyle(
+            color: needleColor, fontSize: 32, fontWeight: FontWeight.w500),
+      ),
+      textDirection: TextDirection.ltr,
+    );
+    speedText.layout();
+    speedText.paint(
+      canvas,
+      Offset(center.dx - speedText.width / 2, center.dy + 28),
     );
 
-    double sweepAngle = (speed / 120).clamp(0.0, 1.0) * (pi * 1.5);
-
-    canvas.drawArc(
-      Rect.fromCircle(center: center, radius: radius - 10),
-      pi * 0.75,
-      sweepAngle,
-      false,
-      progressPaint,
+    final mphText = TextPainter(
+      text: const TextSpan(
+        text: 'MPH',
+        style: TextStyle(color: Colors.grey, fontSize: 11),
+      ),
+      textDirection: TextDirection.ltr,
+    );
+    mphText.layout();
+    mphText.paint(
+      canvas,
+      Offset(center.dx - mphText.width / 2, center.dy + 62),
     );
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+  bool shouldRepaint(covariant RealGaugePainter oldDelegate) => true;
 }
 
 /// شاشة الإعدادات
@@ -525,10 +664,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return WillPopScope(
-      onWillPop: () async {
-        _returnResult();
-        return false;
+    return PopScope(
+      canPop: false,
+      onPopInvoked: (didPop) {
+        if (!didPop) _returnResult();
       },
       child: Scaffold(
         appBar: AppBar(
@@ -589,6 +728,128 @@ class _SettingsScreenState extends State<SettingsScreen> {
               divisions: 9,
               label: '$_maxAlerts',
               onChanged: (v) => setState(() => _maxAlerts = v.round()),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// شاشة اختيار اللون: شريط تدرّج تسحب عليه نقطة، والتطبيق كامل يتلون فوراً
+class ColorPickerScreen extends StatefulWidget {
+  const ColorPickerScreen({super.key});
+
+  @override
+  State<ColorPickerScreen> createState() => _ColorPickerScreenState();
+}
+
+class _ColorPickerScreenState extends State<ColorPickerScreen> {
+  late double _hue;
+  final GlobalKey _barKey = GlobalKey();
+
+  @override
+  void initState() {
+    super.initState();
+    final hsv = HSVColor.fromColor(accentColorController.value);
+    _hue = hsv.hue;
+  }
+
+  Color get _currentColor => HSVColor.fromAHSV(1.0, _hue, 0.85, 0.85).toColor();
+
+  void _handlePosition(Offset globalPosition) {
+    final box = _barKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null) return;
+    final local = box.globalToLocal(globalPosition);
+    final width = box.size.width;
+    final t = (local.dx / width).clamp(0.0, 1.0);
+    setState(() => _hue = t * 360);
+    accentColorController.value = _currentColor;
+  }
+
+  Future<void> _saveAndExit() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('accentColor', _currentColor.value);
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('App Color')),
+      body: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          children: [
+            const SizedBox(height: 16),
+            Container(
+              width: 90,
+              height: 90,
+              decoration: BoxDecoration(
+                color: _currentColor,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.grey.shade800, width: 2),
+              ),
+            ),
+            const SizedBox(height: 32),
+            GestureDetector(
+              onPanUpdate: (details) => _handlePosition(details.globalPosition),
+              onTapDown: (details) => _handlePosition(details.globalPosition),
+              child: Container(
+                key: _barKey,
+                height: 40,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(20),
+                  gradient: const LinearGradient(colors: [
+                    Color(0xFFFF0000),
+                    Color(0xFFFFFF00),
+                    Color(0xFF00FF00),
+                    Color(0xFF00FFFF),
+                    Color(0xFF0000FF),
+                    Color(0xFFFF00FF),
+                    Color(0xFFFF0000),
+                  ]),
+                ),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final width = constraints.maxWidth;
+                    final left = (_hue / 360 * width - 16)
+                        .clamp(0.0, width - 32);
+                    return Stack(
+                      children: [
+                        Positioned(
+                          left: left,
+                          top: 4,
+                          child: Container(
+                            width: 32,
+                            height: 32,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Colors.white,
+                              border:
+                                  Border.all(color: Colors.black, width: 2),
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Drag the dot to pick your app color',
+              style: TextStyle(color: Colors.grey, fontSize: 12),
+            ),
+            const SizedBox(height: 32),
+            ElevatedButton(
+              onPressed: _saveAndExit,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _currentColor,
+                foregroundColor: Colors.black,
+              ),
+              child: const Text('Done'),
             ),
           ],
         ),
