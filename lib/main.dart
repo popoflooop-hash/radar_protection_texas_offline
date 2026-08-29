@@ -133,7 +133,7 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
   bool _isTracking = false;
   bool _useKmh = false;
 
-  double _hudScale = 1.4; // تكبير العداد بوضع المرآة (الزجاج)
+  double _hudScale = 1.4;
   int _maxAlertsPerMinute = 4;
   final List<DateTime> _alertTimestamps = [];
 
@@ -205,7 +205,6 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
           ),
         );
       }
-      // يفتح شاشة إعدادات الموقع بالنظام مباشرة (أقرب بديل ممكن لنافذة النظام السريعة)
       await Geolocator.openLocationSettings();
       return;
     }
@@ -372,7 +371,6 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
       builder: (context, accent, _) {
         final limitMph = _estimatedSpeedLimitMph;
         bool isSpeeding = limitMph != null && _currentSpeedMph > limitMph;
-        // اللون العام دايماً هو لونك المختار، إلا وقت تجاوز السرعة = أحمر ثابت (سلامة)
         Color statusColor = isSpeeding ? Colors.redAccent : accent;
 
         final displaySpeed =
@@ -382,9 +380,13 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
             : (_useKmh ? _mphToKmh(limitMph) : limitMph);
         final unitLabel = _useKmh ? 'KM/H' : 'MPH';
 
+        // حجم العداد يتكيف مع أصغر بعد بالشاشة (يصغر تلقائياً بالوضع الأفقي)
+        final shortestSide = MediaQuery.of(context).size.shortestSide;
+        final gaugeSize = min(shortestSide * 0.55, 240.0);
+
         Widget gauge = _gaugeStyle == GaugeStyle.analog
             ? CustomPaint(
-                size: const Size(240, 240),
+                size: Size(gaugeSize, gaugeSize),
                 painter: RealGaugePainter(
                   speed: displaySpeed,
                   maxSpeed: _useKmh ? 220 : 140,
@@ -396,8 +398,8 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
                 ),
               )
             : Container(
-                width: 220,
-                height: 220,
+                width: gaugeSize,
+                height: gaugeSize,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   border: Border.all(color: statusColor, width: 8),
@@ -409,7 +411,7 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
                     Text(
                       displaySpeed.toStringAsFixed(0),
                       style: TextStyle(
-                          fontSize: 78,
+                          fontSize: gaugeSize * 0.35,
                           fontWeight: FontWeight.w500,
                           color: statusColor),
                     ),
@@ -455,105 +457,114 @@ class _SpeedometerScreenState extends State<SpeedometerScreen> {
               ),
             ],
           ),
-          body: Column(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              if (_roadNetwork == null && !_roadDataFailed)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 6),
-                  child: Text(
-                    'Loading road data...',
-                    style: TextStyle(color: Colors.grey, fontSize: 12),
-                  ),
-                ),
-              if (_roadDataFailed)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 6),
-                  child: Text(
-                    'Could not load speed limit data',
-                    style: TextStyle(color: Colors.orangeAccent, fontSize: 12),
-                  ),
-                ),
-              Wrap(
-                alignment: WrapAlignment.center,
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  OutlinedButton.icon(
-                    onPressed: _isTracking ? _stopTracking : _startTracking,
-                    icon: Icon(
-                      _isTracking ? Icons.stop : Icons.play_arrow,
-                      color: accent,
-                    ),
-                    label: Text(
-                      _isTracking ? 'Stop tracking' : 'Start tracking',
-                      style: TextStyle(color: accent),
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      side: BorderSide(color: accent),
-                    ),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: _toggleViewMode,
-                    icon: Icon(Icons.flip, color: accent),
-                    label: Text(
-                      _viewMode == ViewMode.normal
-                          ? 'View: Normal'
-                          : 'View: Mirror (HUD)',
-                      style: TextStyle(color: accent),
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      side: BorderSide(color: accent),
-                    ),
-                  ),
-                  ElevatedButton.icon(
-                    onPressed: _toggleGaugeStyle,
-                    icon: const Icon(Icons.dashboard_customize),
-                    label: Text(_gaugeStyle == GaugeStyle.digital
-                        ? 'Gauge: Digital'
-                        : 'Gauge: Analog'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: accent,
-                      foregroundColor: Colors.black,
-                    ),
-                  ),
-                ],
-              ),
-              Expanded(
-                child: Center(child: gauge),
-              ),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF111111),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: accent, width: 1.5),
-                ),
+          body: SafeArea(
+            child: SingleChildScrollView(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12),
                 child: Column(
                   children: [
-                    Text('SPEED LIMIT',
-                        style: TextStyle(
+                    if (_roadNetwork == null && !_roadDataFailed)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 6),
+                        child: Text(
+                          'Loading road data...',
+                          style: TextStyle(color: Colors.grey, fontSize: 12),
+                        ),
+                      ),
+                    if (_roadDataFailed)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 6),
+                        child: Text(
+                          'Could not load speed limit data',
+                          style: TextStyle(
+                              color: Colors.orangeAccent, fontSize: 12),
+                        ),
+                      ),
+                    Wrap(
+                      alignment: WrapAlignment.center,
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        OutlinedButton.icon(
+                          onPressed:
+                              _isTracking ? _stopTracking : _startTracking,
+                          icon: Icon(
+                            _isTracking ? Icons.stop : Icons.play_arrow,
                             color: accent,
-                            fontWeight: FontWeight.w500,
-                            letterSpacing: 1,
-                            fontSize: 11)),
-                    Text(
-                      displayLimit?.toString() ?? '--',
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w500,
-                          fontSize: 30),
+                          ),
+                          label: Text(
+                            _isTracking ? 'Stop tracking' : 'Start tracking',
+                            style: TextStyle(color: accent),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            side: BorderSide(color: accent),
+                          ),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: _toggleViewMode,
+                          icon: Icon(Icons.flip, color: accent),
+                          label: Text(
+                            _viewMode == ViewMode.normal
+                                ? 'View: Normal'
+                                : 'View: Mirror (HUD)',
+                            style: TextStyle(color: accent),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            side: BorderSide(color: accent),
+                          ),
+                        ),
+                        ElevatedButton.icon(
+                          onPressed: _toggleGaugeStyle,
+                          icon: const Icon(Icons.dashboard_customize),
+                          label: Text(_gaugeStyle == GaugeStyle.digital
+                              ? 'Gauge: Digital'
+                              : 'Gauge: Analog'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: accent,
+                            foregroundColor: Colors.black,
+                          ),
+                        ),
+                      ],
                     ),
-                    Text(
-                      _speedLimitConfirmed ? 'TxDOT official data' : '',
-                      style: const TextStyle(color: Colors.grey, fontSize: 9),
+                    const SizedBox(height: 20),
+                    Center(child: gauge),
+                    const SizedBox(height: 20),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 24, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF111111),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: accent, width: 1.5),
+                      ),
+                      child: Column(
+                        children: [
+                          Text('SPEED LIMIT',
+                              style: TextStyle(
+                                  color: accent,
+                                  fontWeight: FontWeight.w500,
+                                  letterSpacing: 1,
+                                  fontSize: 11)),
+                          Text(
+                            displayLimit?.toString() ?? '--',
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w500,
+                                fontSize: 30),
+                          ),
+                          Text(
+                            _speedLimitConfirmed ? 'TxDOT official data' : '',
+                            style: const TextStyle(
+                                color: Colors.grey, fontSize: 9),
+                          ),
+                        ],
+                      ),
                     ),
+                    const SizedBox(height: 16),
                   ],
                 ),
               ),
-              const SizedBox(height: 16),
-            ],
+            ),
           ),
         );
 
